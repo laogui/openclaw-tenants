@@ -1,0 +1,12 @@
+{
+  list: [
+    {
+      id: '10001',
+      workspace: 'tenants/10001/workspace',
+    },
+    {
+      id: '10002',
+      workspace: 'tenants/10002/workspace',
+    },
+  ],
+}
