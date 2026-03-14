@@ -3,27 +3,11 @@ const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL
 
 const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || ''
 
-export interface ChatRequest {
-  messages: Array<{ role: string; content: string }>
-  stream?: boolean
-  temperature?: number
-  [key: string]: unknown
-}
+const MODEL_PREFIX = 'openclaw:'
 
 export async function proxyChatRequest(
-  agentId: string,
-  body: ChatRequest,
+  body: Record<string, unknown>,
 ): Promise<Response> {
-  const { messages, stream, temperature, ...rest } = body
-
-  const payload = {
-    ...rest,
-    model: `openclaw:${agentId}`,
-    messages,
-    stream: stream ?? false,
-    ...(temperature !== undefined ? { temperature } : {}),
-  }
-
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
@@ -32,11 +16,16 @@ export async function proxyChatRequest(
     headers['Authorization'] = `Bearer ${OPENCLAW_TOKEN}`
   }
 
-  const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
+  // 从 model 提取 userId，自动注入 user 字段以保持稳定会话
+  const payload = { ...body }
+  const model = payload.model as string | undefined
+  if (model?.startsWith(MODEL_PREFIX) && !payload.user) {
+    payload.user = model.slice(MODEL_PREFIX.length)
+  }
+
+  return fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
   })
-
-  return response
 }
