@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { WebSocketServer, WebSocket } from 'ws'
+import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import { FastifyInstance, FastifyReply } from 'fastify'
 import {
   RelayFrame,
@@ -43,7 +43,7 @@ export class RelayServer {
       const nonce = randomUUID()
       ws.send(encodeFrame({ type: 'auth.challenge', nonce }))
 
-      ws.on('message', (raw: WebSocket.RawData) => {
+      ws.on('message', (raw: RawData) => {
         let frame: RelayFrame
         try {
           frame = decodeFrame(raw.toString())

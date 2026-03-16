@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto'
-import WebSocket from 'ws'
+import WebSocket, { type RawData } from 'ws'
 import {
   RelayFrame,
   RelayRequest,
@@ -92,7 +92,7 @@ export class RelayClient {
       console.log('[RelayClient] WebSocket connected, waiting for auth challenge...')
     })
 
-    ws.on('message', (raw: WebSocket.RawData) => {
+    ws.on('message', (raw: RawData) => {
       if (this.ws !== ws) return
 
       let frame: RelayFrame
