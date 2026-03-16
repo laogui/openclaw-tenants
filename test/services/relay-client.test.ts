@@ -5,7 +5,7 @@ import WebSocket from 'ws'
 import { RelayClient } from '../../src/services/relay/relay-client'
 
 class FakeWebSocket extends EventEmitter {
-  readyState = WebSocket.CONNECTING
+	readyState: number = WebSocket.CONNECTING
   terminateCalls = 0
   closeCalls = 0
 
