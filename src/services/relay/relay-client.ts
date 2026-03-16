@@ -8,12 +8,15 @@ import {
 } from './relay-protocol'
 import { proxyChatRequest } from '../chat-proxy-service'
 
-const RELAY_SERVER_URL = process.env.RELAY_SERVER_URL || ''
-const RELAY_AUTH_TOKEN = process.env.RELAY_AUTH_TOKEN || ''
-
 const RECONNECT_BASE_MS = 3_000
 const RECONNECT_MAX_MS = 60_000
 const HEARTBEAT_TIMEOUT_MS = 45_000
+const CONNECT_TIMEOUT_MS = 10_000
+
+const getRelayServerUrl = (): string => process.env.RELAY_SERVER_URL || ''
+const getRelayAuthToken = (): string => process.env.RELAY_AUTH_TOKEN || ''
+
+type WebSocketFactory = (url: string) => WebSocket
 
 export class RelayClient {
   private ws: WebSocket | null = null
@@ -21,37 +24,77 @@ export class RelayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
+  private connecting = false
+
+  constructor(
+    private readonly createWebSocket: WebSocketFactory = (url) => new WebSocket(url, {
+      handshakeTimeout: CONNECT_TIMEOUT_MS,
+    }),
+  ) {}
 
   async connect(): Promise<void> {
-    if (!RELAY_SERVER_URL) {
+    const relayServerUrl = getRelayServerUrl()
+    if (!relayServerUrl) {
       throw new Error('RELAY_SERVER_URL is not configured')
     }
+
     this.stopped = false
-    this.doConnect()
+    this.clearReconnectTimer()
+
+    if (this.ws || this.connecting) {
+      return
+    }
+
+    this.doConnect(relayServerUrl)
   }
 
   stop(): void {
     this.stopped = true
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer)
-      this.reconnectTimer = null
-    }
+    this.connecting = false
+    this.clearReconnectTimer()
     this.stopHeartbeatWatch()
+
     if (this.ws) {
-      this.ws.close()
+      const ws = this.ws
       this.ws = null
+      ws.close()
     }
   }
 
-  private doConnect(): void {
-    console.log(`[RelayClient] Connecting to ${RELAY_SERVER_URL} ...`)
-    const ws = new WebSocket(RELAY_SERVER_URL)
+  private doConnect(relayServerUrl = getRelayServerUrl()): void {
+    if (this.stopped || this.ws || this.connecting) {
+      return
+    }
+
+    if (!relayServerUrl) {
+      console.error('[RelayClient] RELAY_SERVER_URL is not configured, skip connect')
+      return
+    }
+
+    console.log(`[RelayClient] Connecting to ${relayServerUrl} ...`)
+
+    let ws: WebSocket
+    try {
+      ws = this.createWebSocket(relayServerUrl)
+    } catch (err: any) {
+      console.error('[RelayClient] Failed to create websocket:', err.message || err)
+      this.scheduleReconnect()
+      return
+    }
+
+    this.ws = ws
+    this.connecting = true
 
     ws.on('open', () => {
+      if (this.ws !== ws) return
+
+      this.connecting = false
       console.log('[RelayClient] WebSocket connected, waiting for auth challenge...')
     })
 
-    ws.on('message', (raw) => {
+    ws.on('message', (raw: WebSocket.RawData) => {
+      if (this.ws !== ws) return
+
       let frame: RelayFrame
       try {
         frame = decodeFrame(raw.toString())
@@ -63,23 +106,31 @@ export class RelayClient {
     })
 
     ws.on('close', () => {
+      if (this.ws !== ws) return
+
       console.log('[RelayClient] Disconnected')
       this.stopHeartbeatWatch()
       this.ws = null
+      this.connecting = false
       this.scheduleReconnect()
     })
 
-    ws.on('error', (err) => {
-      console.error('[RelayClient] WS error:', err.message)
-    })
+    ws.on('error', (err: Error) => {
+      if (this.ws !== ws) return
 
-    this.ws = ws
+      this.connecting = false
+      console.error('[RelayClient] WS error:', err.message)
+
+      if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+        ws.terminate()
+      }
+    })
   }
 
   private handleFrame(ws: WebSocket, frame: RelayFrame): void {
     switch (frame.type) {
       case 'auth.challenge': {
-        const hmac = createHmac('sha256', RELAY_AUTH_TOKEN)
+        const hmac = createHmac('sha256', getRelayAuthToken())
           .update(frame.nonce)
           .digest('hex')
         ws.send(encodeFrame({ type: 'auth', token: hmac }))
@@ -99,6 +150,10 @@ export class RelayClient {
       }
 
       case 'chat.request': {
+        console.log('[RelayClient] Received chat.request:', JSON.stringify({
+          id: frame.id,
+          payload: frame.payload,
+        }, null, 2))
         this.handleChatRequest(ws, frame).catch((err) => {
           console.error('[RelayClient] Error handling request:', err)
         })
@@ -120,7 +175,20 @@ export class RelayClient {
 
   private async handleChatRequest(ws: WebSocket, req: RelayRequest): Promise<void> {
     try {
+      console.log('[RelayClient] Forwarding request to OpenClaw:', JSON.stringify({
+        id: req.id,
+        model: req.payload.model,
+        stream: !!req.payload.stream,
+      }, null, 2))
+
       const response = await proxyChatRequest(req.payload)
+
+      console.log('[RelayClient] OpenClaw responded:', JSON.stringify({
+        id: req.id,
+        status: response.status,
+        contentType: response.headers.get('content-type'),
+        stream: !!req.payload.stream,
+      }, null, 2))
 
       if (req.payload.stream) {
         await this.handleStreamResponse(ws, req.id, response)
@@ -128,6 +196,11 @@ export class RelayClient {
         await this.handleNonStreamResponse(ws, req.id, response)
       }
     } catch (err: any) {
+      console.error('[RelayClient] OpenClaw request failed:', JSON.stringify({
+        id: req.id,
+        message: err.message || 'OpenClaw request failed',
+      }, null, 2))
+
       ws.send(encodeFrame({
         type: 'chat.error',
         id: req.id,
@@ -227,7 +300,7 @@ export class RelayClient {
   // ── 自动重连（指数退避） ──
 
   private scheduleReconnect(): void {
-    if (this.stopped) return
+    if (this.stopped || this.reconnectTimer) return
 
     const delay = Math.min(
       RECONNECT_BASE_MS * Math.pow(2, this.reconnectAttempts),
@@ -237,8 +310,16 @@ export class RelayClient {
     console.log(`[RelayClient] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
 
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
       this.doConnect()
     }, delay)
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
   }
 
   // ── 心跳监测（如果长时间没收到 ping，说明连接可能已断） ──

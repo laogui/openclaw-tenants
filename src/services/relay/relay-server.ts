@@ -35,7 +35,7 @@ export class RelayServer {
     this.wss = new WebSocketServer({ port })
     fastify.log.info(`Relay WS Server listening on port ${port}`)
 
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws: WebSocket) => {
       fastify.log.info('Internal relay client connected')
       this.authenticated = false
 
@@ -43,7 +43,7 @@ export class RelayServer {
       const nonce = randomUUID()
       ws.send(encodeFrame({ type: 'auth.challenge', nonce }))
 
-      ws.on('message', (raw) => {
+      ws.on('message', (raw: WebSocket.RawData) => {
         let frame: RelayFrame
         try {
           frame = decodeFrame(raw.toString())
@@ -90,7 +90,7 @@ export class RelayServer {
         }
       })
 
-      ws.on('error', (err) => {
+      ws.on('error', (err: Error) => {
         fastify.log.error(err, 'Relay WS error')
       })
     })
