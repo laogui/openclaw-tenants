@@ -18,6 +18,7 @@ For production mode
 
 Run the test cases.
 
-## Learn More
+### pm2
 
-To learn Fastify, check out the [Fastify documentation](https://fastify.dev/docs/latest/).
+PORT=3002 pm2 start npm --name openclaw -- run start
+
